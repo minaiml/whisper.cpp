@@ -1,21 +1,35 @@
-require 'mkmf'
-system("cp #{File.join(File.dirname(__FILE__),'..','..','..','whisper.cpp')} .")
-system("cp #{File.join(File.dirname(__FILE__),'..','..','..','whisper.h')} .")
-system("cp #{File.join(File.dirname(__FILE__),'..','..','..','ggml.h')} .")
-system("cp #{File.join(File.dirname(__FILE__),'..','..','..','ggml.c')} .")
-system("cp #{File.join(File.dirname(__FILE__),'..','..','..','examples','dr_wav.h')} .")
+require "mkmf"
 
+if RUBY_PLATFORM.match? /mswin|mingw|ucrt/
+  require_relative "options_for_windows"
+  require_relative "dependencies_for_windows"
 
-# need to use c++ compiler flags
-$CXXFLAGS << ' -std=c++11'
-# Set to true when building binary gems
-if enable_config('static-stdlib', false)
-  $LDFLAGS << ' -static-libgcc -static-libstdc++'
+  Opts = OptionsForWindows
+  Deps = DependenciesForWindows
+else
+  require_relative "options"
+  require_relative "dependencies"
+
+  Opts = Options
+  Deps = Dependencies
 end
 
-if enable_config('march-tune-native', false)
-  $CFLAGS << ' -march=native -mtune=native'
-  $CXXFLAGS << ' -march=native -mtune=native'
-end
+cmake = find_executable("cmake") || abort
+options = Opts.new(cmake)
+have_library("gomp") rescue nil
+libs = Deps.new(cmake, options)
 
-create_makefile('whisper')
+append_cflags ["-O3", "-march=native"]
+$INCFLAGS << " -Isources/include -Isources/ggml/include -Isources/examples"
+$LOCAL_LIBS << " #{libs.local_libs}"
+$cleanfiles << " build #{libs}"
+
+create_makefile "whisper" do |conf|
+  conf << <<~EOF
+    $(TARGET_SO): #{libs}
+    #{libs}: cmake-targets
+    cmake-targets:
+    #{"\t"}"#{cmake}" -S sources -B build #{options}
+    #{"\t"}"#{cmake}" --build build --config Release --target common whisper parakeet
+  EOF
+end

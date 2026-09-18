@@ -1,65 +1,70 @@
+#define _USE_MATH_DEFINES // for M_PI
+
 #include "common.h"
 
-// third-party utilities
-// use your favorite implementations
-#define DR_WAV_IMPLEMENTATION
-#include "dr_wav.h"
-
 #include <cmath>
+#include <codecvt>
 #include <cstring>
 #include <fstream>
-#include <regex>
 #include <locale>
-#include <codecvt>
+#include <regex>
 #include <sstream>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#if defined(_MSC_VER)
-#pragma warning(disable: 4244 4267) // possible loss of data
-#endif
+// Function to check if the next argument exists
+static std::string get_next_arg(int& i, int argc, char** argv, const std::string& flag, gpt_params& params) {
+    if (i + 1 < argc && argv[i + 1][0] != '-') {
+        return argv[++i];
+    } else {
+        fprintf(stderr, "error: %s requires one argument.\n", flag.c_str());
+        gpt_print_usage(argc, argv, params);
+        exit(0);
+    }
+}
 
 bool gpt_params_parse(int argc, char ** argv, gpt_params & params) {
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
 
         if (arg == "-s" || arg == "--seed") {
-            params.seed = std::stoi(argv[++i]);
+            params.seed = std::stoi(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "-t" || arg == "--threads") {
-            params.n_threads = std::stoi(argv[++i]);
+            params.n_threads = std::stoi(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "-p" || arg == "--prompt") {
-            params.prompt = argv[++i];
+            params.prompt = get_next_arg(i, argc, argv, arg, params);
         } else if (arg == "-n" || arg == "--n_predict") {
-            params.n_predict = std::stoi(argv[++i]);
+            params.n_predict = std::stoi(get_next_arg(i, argc, argv, arg, params));
+        } else if (arg == "-np" || arg == "--n_parallel") {
+            params.n_parallel = std::stoi(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "--top_k") {
-            params.top_k = std::max(1, std::stoi(argv[++i]));
+            params.top_k = std::stoi(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "--top_p") {
-            params.top_p = std::stof(argv[++i]);
+            params.top_p = std::stof(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "--temp") {
-            params.temp = std::stof(argv[++i]);
+            params.temp = std::stof(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "--repeat-last-n") {
-            params.repeat_last_n = std::stof(argv[++i]);
+            params.repeat_last_n = std::stoi(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "--repeat-penalty") {
-            params.repeat_penalty = std::stof(argv[++i]);
+            params.repeat_penalty = std::stof(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "-b" || arg == "--batch_size") {
-            params.n_batch = std::stoi(argv[++i]);
+            params.n_batch= std::stoi(get_next_arg(i, argc, argv, arg, params));
+        } else if (arg == "-c" || arg == "--context") {
+            params.n_ctx= std::stoi(get_next_arg(i, argc, argv, arg, params));
+        } else if (arg == "-ngl" || arg == "--gpu-layers" || arg == "--n-gpu-layers") {
+            params.n_gpu_layers = std::stoi(get_next_arg(i, argc, argv, arg, params));
+        } else if (arg == "--ignore-eos") {
+            params.ignore_eos = true;
         } else if (arg == "-m" || arg == "--model") {
-            params.model = argv[++i];
+            params.model = get_next_arg(i, argc, argv, arg, params);
         } else if (arg == "-i" || arg == "--interactive") {
             params.interactive = true;
         } else if (arg == "-ip" || arg == "--interactive-port") {
             params.interactive = true;
-            params.interactive_port = std::stoi(argv[++i]);
+            params.interactive_port = std::stoi(get_next_arg(i, argc, argv, arg, params));
         } else if (arg == "-h" || arg == "--help") {
             gpt_print_usage(argc, argv, params);
             exit(0);
         } else if (arg == "-f" || arg == "--file") {
-            if (++i > argc) {
-                fprintf(stderr, "Invalid file param");
-                break;
-            }
+            get_next_arg(i, argc, argv, arg, params);
             std::ifstream file(argv[i]);
             if (!file) {
                 fprintf(stderr, "error: failed to open file '%s'\n", argv[i]);
@@ -70,7 +75,7 @@ bool gpt_params_parse(int argc, char ** argv, gpt_params & params) {
                 params.prompt.pop_back();
             }
         } else if (arg == "-tt" || arg == "--token_test") {
-            params.token_test = argv[++i];
+            params.token_test = get_next_arg(i, argc, argv, arg, params);
         }
         else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
@@ -102,6 +107,9 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     fprintf(stderr, "  --repeat-last-n N     last n tokens to consider for penalize (default: %d, 0 = disabled)\n", params.repeat_last_n);
     fprintf(stderr, "  --repeat-penalty N    penalize repeat sequence of tokens (default: %.2f, 1.0 = disabled)\n", (double)params.repeat_penalty);
     fprintf(stderr, "  -b N, --batch_size N  batch size for prompt processing (default: %d)\n", params.n_batch);
+    fprintf(stderr, "  -c N, --context N     context / KV cache size (default: %d)\n", params.n_ctx);
+    fprintf(stderr, "  --ignore-eos          ignore EOS token during generation\n");
+    fprintf(stderr, "  -ngl N, --gpu-layers N  number of layers to offload to GPU on supported models (default: %d)\n", params.n_gpu_layers);
     fprintf(stderr, "  -m FNAME, --model FNAME\n");
     fprintf(stderr, "                        model path (default: %s)\n", params.model.c_str());
     fprintf(stderr, "\n");
@@ -120,7 +128,6 @@ std::string gpt_random_prompt(std::mt19937 & rng) {
         case 7: return "He";
         case 8: return "She";
         case 9: return "They";
-        default: return "To";
     }
 
     return "The";
@@ -236,17 +243,6 @@ std::map<std::string, int32_t> json_parse(const std::string & fname) {
     return result;
 }
 
-std::string convert_to_utf8(const std::wstring & input) {
-    std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-    return converter.to_bytes(input);
-}
-
-
-std::wstring convert_to_wstring(const std::string & input) {
-    std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-    return converter.from_bytes(input);
-}
-
 void gpt_split_words(std::string str, std::vector<std::string>& words) {
     const std::string pattern = R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)";
     const std::regex re(pattern);
@@ -319,7 +315,7 @@ std::vector<gpt_vocab::id> gpt_tokenize(const gpt_vocab & vocab, const std::stri
     return tokens;
 }
 
-std::vector<gpt_vocab::id> parse_tokens_from_string(const std::string& input, char delimiter) {
+static std::vector<gpt_vocab::id> parse_tokens_from_string(const std::string& input, char delimiter) {
     std::vector<gpt_vocab::id> output;
     std::stringstream ss(input);
     std::string token;
@@ -331,7 +327,7 @@ std::vector<gpt_vocab::id> parse_tokens_from_string(const std::string& input, ch
     return output;
 }
 
-std::map<std::string, std::vector<gpt_vocab::id>> extract_tests_from_file(const std::string & fpath_test){
+static std::map<std::string, std::vector<gpt_vocab::id>> extract_tests_from_file(const std::string & fpath_test){
     if (fpath_test.empty()){
         fprintf(stderr, "%s : No test file found.\n", __func__);
         return std::map<std::string, std::vector<gpt_vocab::id>>();
@@ -598,89 +594,6 @@ gpt_vocab::id gpt_sample_top_k_top_p_repeat(
 
 }
 
-bool read_wav(const std::string & fname, std::vector<float>& pcmf32, std::vector<std::vector<float>>& pcmf32s, bool stereo) {
-    drwav wav;
-    std::vector<uint8_t> wav_data; // used for pipe input from stdin
-
-    if (fname == "-") {
-        {
-            uint8_t buf[1024];
-            while (true)
-            {
-                const size_t n = fread(buf, 1, sizeof(buf), stdin);
-                if (n == 0) {
-                    break;
-                }
-                wav_data.insert(wav_data.end(), buf, buf + n);
-            }
-        }
-
-        if (drwav_init_memory(&wav, wav_data.data(), wav_data.size(), nullptr) == false) {
-            fprintf(stderr, "error: failed to open WAV file from stdin\n");
-            return false;
-        }
-
-        fprintf(stderr, "%s: read %zu bytes from stdin\n", __func__, wav_data.size());
-    }
-    else if (drwav_init_file(&wav, fname.c_str(), nullptr) == false) {
-        fprintf(stderr, "error: failed to open '%s' as WAV file\n", fname.c_str());
-        return false;
-    }
-
-    if (wav.channels != 1 && wav.channels != 2) {
-        fprintf(stderr, "%s: WAV file '%s' must be mono or stereo\n", __func__, fname.c_str());
-        return false;
-    }
-
-    if (stereo && wav.channels != 2) {
-        fprintf(stderr, "%s: WAV file '%s' must be stereo for diarization\n", __func__, fname.c_str());
-        return false;
-    }
-
-    if (wav.sampleRate != COMMON_SAMPLE_RATE) {
-        fprintf(stderr, "%s: WAV file '%s' must be %i kHz\n", __func__, fname.c_str(), COMMON_SAMPLE_RATE/1000);
-        return false;
-    }
-
-    if (wav.bitsPerSample != 16) {
-        fprintf(stderr, "%s: WAV file '%s' must be 16-bit\n", __func__, fname.c_str());
-        return false;
-    }
-
-    const uint64_t n = wav_data.empty() ? wav.totalPCMFrameCount : wav_data.size()/(wav.channels*wav.bitsPerSample/8);
-
-    std::vector<int16_t> pcm16;
-    pcm16.resize(n*wav.channels);
-    drwav_read_pcm_frames_s16(&wav, n, pcm16.data());
-    drwav_uninit(&wav);
-
-    // convert to mono, float
-    pcmf32.resize(n);
-    if (wav.channels == 1) {
-        for (uint64_t i = 0; i < n; i++) {
-            pcmf32[i] = float(pcm16[i])/32768.0f;
-        }
-    } else {
-        for (uint64_t i = 0; i < n; i++) {
-            pcmf32[i] = float(pcm16[2*i] + pcm16[2*i + 1])/65536.0f;
-        }
-    }
-
-    if (stereo) {
-        // convert to stereo, float
-        pcmf32s.resize(2);
-
-        pcmf32s[0].resize(n);
-        pcmf32s[1].resize(n);
-        for (uint64_t i = 0; i < n; i++) {
-            pcmf32s[0][i] = float(pcm16[2*i])/32768.0f;
-            pcmf32s[1][i] = float(pcm16[2*i + 1])/32768.0f;
-        }
-    }
-
-    return true;
-}
-
 void high_pass_filter(std::vector<float> & data, float cutoff, float sample_rate) {
     const float rc = 1.0f / (2.0f * M_PI * cutoff);
     const float dt = 1.0f / sample_rate;
@@ -754,4 +667,9 @@ float similarity(const std::string & s0, const std::string & s1) {
     const float dist = prevCol[len1 - 1];
 
     return 1.0f - (dist / std::max(s0.size(), s1.size()));
+}
+
+bool is_file_exist(const char * filename) {
+    std::ifstream infile(filename);
+    return infile.good();
 }

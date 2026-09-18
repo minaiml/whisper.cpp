@@ -1,21 +1,49 @@
-cmake_minimum_required (VERSION 3.0)
+cmake_minimum_required(VERSION 3.5) # for add_link_options and implicit target directories.
+project("whisper.cpp" C CXX)
+include(CheckIncludeFileCXX)
 
-project(whisper.cpp VERSION 1.4.2)
+### whisper.cpp version
+set(WHISPER_VERSION_MAJOR 1)
+set(WHISPER_VERSION_MINOR 9)
+set(WHISPER_VERSION_PATCH 4)
+set(WHISPER_VERSION_BASE "${WHISPER_VERSION_MAJOR}.${WHISPER_VERSION_MINOR}.${WHISPER_VERSION_PATCH}")
+
+# whether this is a development/nightly build
+# set this to OFF when making a release from a release tag (vX.Y.Z)
+# ref: https://github.com/ggml-org/ggml/discussions/1579
+option(WHISPER_BUILD_IS_DEV "whisper: dev build" ON)
+
+if (WHISPER_BUILD_IS_DEV)
+    set(WHISPER_VERSION "${WHISPER_VERSION_BASE}-dev")
+else()
+    # TODO: check that the current commit is tagged correctly according to the version specified above
+    set(WHISPER_VERSION "${WHISPER_VERSION_BASE}")
+endif()
+
+message(STATUS "whisper.cpp version: ${WHISPER_VERSION}")
+
+#set(CMAKE_WARN_DEPRECATED YES)
+set(CMAKE_WARN_UNUSED_CLI YES)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+endif()
 
 # Add path to modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(WHISPER_STANDALONE ON)
-    include(GitVars)
-    include(BuildTypes)
+
+    include(git-vars)
 
     # configure project version
-    if (EXISTS "${CMAKE_SOURCE_DIR}/bindings/ios/Makefile-tmpl")
-        configure_file(${CMAKE_SOURCE_DIR}/bindings/ios/Makefile-tmpl ${CMAKE_SOURCE_DIR}/bindings/ios/Makefile @ONLY)
-    endif()
     configure_file(${CMAKE_SOURCE_DIR}/bindings/javascript/package-tmpl.json ${CMAKE_SOURCE_DIR}/bindings/javascript/package.json @ONLY)
 else()
     set(WHISPER_STANDALONE OFF)
@@ -24,7 +52,20 @@ endif()
 if (EMSCRIPTEN)
     set(BUILD_SHARED_LIBS_DEFAULT OFF)
 
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
     option(WHISPER_WASM_SINGLE_FILE "whisper: embed WASM inside the generated whisper.js" ON)
+
+    # TODO: without these, we get the following error:
+    #       wasm-ld: error: --shared-memory is disallowed by whisper.cpp.o because it was not compiled with 'atomics' or 'bulk-memory' features.
+    set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -pthread")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
+
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -s TOTAL_STACK=5242880")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -s TOTAL_STACK=5242880")
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated")
 else()
     if (MINGW)
         set(BUILD_SHARED_LIBS_DEFAULT OFF)
@@ -33,399 +74,251 @@ else()
     endif()
 endif()
 
-# options
+option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
-option(BUILD_SHARED_LIBS              "whisper: build shared libs" ${BUILD_SHARED_LIBS_DEFAULT})
+#
+# option list
+#
 
+# debug
 option(WHISPER_ALL_WARNINGS           "whisper: enable all compiler warnings"                   ON)
 option(WHISPER_ALL_WARNINGS_3RD_PARTY "whisper: enable all compiler warnings in 3rd party libs" OFF)
 
-option(WHISPER_SANITIZE_THREAD        "whisper: enable thread sanitizer"    OFF)
-option(WHISPER_SANITIZE_ADDRESS       "whisper: enable address sanitizer"   OFF)
-option(WHISPER_SANITIZE_UNDEFINED     "whisper: enable undefined sanitizer" OFF)
+# build
+option(WHISPER_FATAL_WARNINGS   "whisper: enable -Werror flag"                    OFF)
+option(WHISPER_USE_SYSTEM_GGML  "whisper: use system-installed GGML library"      OFF)
+option(WHISPER_USE_SYSTEM_LLAMA "whisper: use system-installed llama.cpp library" OFF)
 
-option(WHISPER_BUILD_TESTS            "whisper: build tests"    ${WHISPER_STANDALONE})
-option(WHISPER_BUILD_EXAMPLES         "whisper: build examples" ${WHISPER_STANDALONE})
-
-option(WHISPER_SDL2                   "whisper: support for libSDL2" OFF)
-
-option(WHISPER_NO_AVX                 "whisper: disable AVX"  OFF)
-option(WHISPER_NO_AVX2                "whisper: disable AVX2" OFF)
-option(WHISPER_NO_FMA                 "whisper: disable FMA"  OFF)
-option(WHISPER_NO_F16C                "whisper: disable F16c" OFF)
-
-option(WHISPER_OPENVINO               "whisper: support for OpenVINO" OFF)
-
-if (APPLE)
-    option(WHISPER_NO_ACCELERATE         "whisper: disable Accelerate framework" OFF)
-    option(WHISPER_COREML                "whisper: enable Core ML framework"     OFF)
-    option(WHISPER_COREML_ALLOW_FALLBACK "whisper: allow non-CoreML fallback"    OFF)
-else()
-    option(WHISPER_BLAS                  "whisper: use BLAS libraries"  OFF)
-    option(WHISPER_BLAS_VENDOR           "whisper: BLAS library vendor" Generic)
-    option(WHISPER_OPENBLAS              "whisper: prefer OpenBLAS"     OFF)
-    option(WHISPER_CUBLAS                "whisper: support for cuBLAS"  OFF)
-    option(WHISPER_CLBLAST               "whisper: use CLBlast"         OFF)
+if (WHISPER_USE_SYSTEM_LLAMA AND NOT WHISPER_USE_SYSTEM_GGML)
+    message(STATUS "WHISPER_USE_SYSTEM_LLAMA=ON: setting WHISPER_USE_SYSTEM_GGML=ON")
+    set(WHISPER_USE_SYSTEM_GGML ON CACHE BOOL "" FORCE)
 endif()
-
-option(WHISPER_PERF "whisper: enable perf timings" OFF)
 
 # sanitizers
+option(WHISPER_SANITIZE_THREAD    "whisper: enable thread sanitizer"    OFF)
+option(WHISPER_SANITIZE_ADDRESS   "whisper: enable address sanitizer"   OFF)
+option(WHISPER_SANITIZE_UNDEFINED "whisper: enable undefined sanitizer" OFF)
 
-if (NOT MSVC)
-    if (WHISPER_SANITIZE_THREAD)
-        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -fsanitize=thread")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=thread")
-    endif()
+# extra artifacts
+option(WHISPER_BUILD_TESTS    "whisper: build tests"          ${WHISPER_STANDALONE})
+option(WHISPER_BUILD_EXAMPLES "whisper: build examples"       ${WHISPER_STANDALONE})
+option(WHISPER_BUILD_SERVER   "whisper: build server example" ${WHISPER_STANDALONE})
 
-    if (WHISPER_SANITIZE_ADDRESS)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}     -fsanitize=address -fno-omit-frame-pointer")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
-    endif()
+# 3rd party libs
+option(WHISPER_CURL "whisper: use libcurl to download model from an URL" OFF)
+option(WHISPER_SDL2 "whisper: support for libSDL2" OFF)
 
-    if (WHISPER_SANITIZE_UNDEFINED)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}     -fsanitize=undefined")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined")
-    endif()
+if (CMAKE_SYSTEM_NAME MATCHES "Linux")
+    option(WHISPER_COMMON_FFMPEG "whisper: examples link with ffmpeg libs in order to decode more audio formats" OFF)
 endif()
 
-#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffast-math")
-#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+option(WHISPER_COREML                "whisper: enable Core ML framework"  OFF)
+option(WHISPER_COREML_ALLOW_FALLBACK "whisper: allow non-CoreML fallback" OFF)
+option(WHISPER_OPENVINO              "whisper: support for OpenVINO"      OFF)
+option(WHISPER_VITISAI               "whisper: support for AMD Vitis AI"  OFF)
 
-# dependencies
+# Required for relocatable CMake package
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 
-find_package(Threads REQUIRED)
+# override ggml options
+set(GGML_SANITIZE_THREAD    ${WHISPER_SANITIZE_THREAD})
+set(GGML_SANITIZE_ADDRESS   ${WHISPER_SANITIZE_ADDRESS})
+set(GGML_SANITIZE_UNDEFINED ${WHISPER_SANITIZE_UNDEFINED})
+set(GGML_ALL_WARNINGS       ${WHISPER_ALL_WARNINGS})
+set(GGML_FATAL_WARNINGS     ${WHISPER_FATAL_WARNINGS})
 
-# on APPLE
-if (APPLE)
-    # include Accelerate framework
-    if (NOT WHISPER_NO_ACCELERATE)
-        find_library(ACCELERATE_FRAMEWORK Accelerate)
-
-        if (ACCELERATE_FRAMEWORK)
-            message(STATUS "Accelerate framework found")
-
-            set(WHISPER_EXTRA_LIBS  ${WHISPER_EXTRA_LIBS}  ${ACCELERATE_FRAMEWORK})
-            set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DGGML_USE_ACCELERATE)
-        else()
-            message(WARNING "Accelerate framework not found")
-        endif()
+# transition helpers
+function (whisper_option_depr TYPE OLD NEW)
+    if (${OLD})
+        message(${TYPE} "${OLD} is deprecated and will be removed in the future.\nUse ${NEW} instead\n")
+        set(${NEW} ON)
     endif()
+endfunction()
 
-    if (WHISPER_COREML)
-        find_library(FOUNDATION_FRAMEWORK Foundation)
-        find_library(COREML_FRAMEWORK CoreML)
+whisper_option_depr(FATAL_ERROR WHISPER_CUBLAS              GGML_CUDA)
+whisper_option_depr(WARNING     WHISPER_CUDA                GGML_CUDA)
+whisper_option_depr(WARNING     WHISPER_KOMPUTE             GGML_KOMPUTE)
+whisper_option_depr(WARNING     WHISPER_METAL               GGML_METAL)
+whisper_option_depr(WARNING     WHISPER_METAL_EMBED_LIBRARY GGML_METAL_EMBED_LIBRARY)
+whisper_option_depr(WARNING     WHISPER_NATIVE              GGML_NATIVE)
+whisper_option_depr(WARNING     WHISPER_OPENMP              GGML_OPENMP)
+whisper_option_depr(WARNING     WHISPER_RPC                 GGML_RPC)
+whisper_option_depr(WARNING     WHISPER_SYCL                GGML_SYCL)
+whisper_option_depr(WARNING     WHISPER_SYCL_F16            GGML_SYCL_F16)
+whisper_option_depr(WARNING     WHISPER_CCACHE              GGML_CCACHE)
+whisper_option_depr(WARNING     WHISPER_FFMPEG              WHISPER_COMMON_FFMPEG)
 
-        if (COREML_FRAMEWORK)
-            message(STATUS "CoreML framework found")
-
-            set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_USE_COREML)
-        else()
-            message(WARNING "CoreML framework not found")
-        endif()
-
-        if (WHISPER_COREML_ALLOW_FALLBACK)
-            set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_COREML_ALLOW_FALLBACK)
-        endif()
-    endif()
+if (GGML_CUDA AND NOT MSVC)
+    #GGML_CUDA enabled, add the necessary compile options -Wno-deprecated-gpu-targets
+    add_compile_options(-Wno-deprecated-gpu-targets)
 endif()
 
-if (WHISPER_OPENBLAS)
-    set(WHISPER_BLAS_VENDOR "OpenBLAS")
-    set(WHISPER_BLAS ON)
-endif()
+#
+# build the library
+#
 
-if (WHISPER_BLAS)
-    if (WIN32)
-        if(DEFINED ENV{OPENBLAS_PATH})
-            set(BLAS_LIBRARIES $ENV{OPENBLAS_PATH}/lib/libopenblas.dll.a)
-            message(STATUS "Libraries ${BLAS_LIBRARIES}")
-            set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DGGML_USE_OPENBLAS)
-            include_directories($ENV{OPENBLAS_PATH}/include)
-            set(WHISPER_EXTRA_LIBS ${WHISPER_EXTRA_LIBS} ${BLAS_LIBRARIES})
-        else ()
-            message(WARNING "BLAS library was not found. Environment variable OPENBLAS_PATH not defined.")
-        endif ()
-    else ()
-        set(BLA_STATIC 1)
-        set(BLA_VENDOR ${WHISPER_BLAS_VENDOR})
-        #    set(BLA_PREFER_PKGCONFIG 1)
-        set(BLA_SIZEOF_INTEGER 8)
-        find_package(BLAS)
-
-        if(BLAS_FOUND)
-            message(STATUS "BLAS compatible library found")
-            message(STATUS "Libraries ${BLAS_LIBRARIES}")
-            set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DGGML_USE_OPENBLAS)
-            include_directories(${BLAS_INCLUDE_DIRS})
-            set(WHISPER_EXTRA_LIBS ${WHISPER_EXTRA_LIBS} ${BLAS_LIBRARIES})
-        else()
-            message(WARNING "BLAS library was not found")
+if (NOT TARGET ggml)
+    if (WHISPER_USE_SYSTEM_GGML)
+        find_package(ggml REQUIRED)
+        if (NOT ggml_FOUND)
+            message(FATAL_ERROR "System-installed GGML library not found.")
         endif()
-    endif ()
-endif ()
-
-if (WHISPER_CUBLAS)
-    cmake_minimum_required(VERSION 3.17)
-
-    find_package(CUDAToolkit)
-
-    if (CUDAToolkit_FOUND)
-        message(STATUS "cuBLAS found")
-
-        enable_language(CUDA)
-
-        set(GGML_CUDA_SOURCES ggml-cuda.cu ggml-cuda.h)
-
-        add_compile_definitions(GGML_USE_CUBLAS)
-
-        if (WHISPER_STATIC)
-            set(WHISPER_EXTRA_LIBS ${WHISPER_EXTRA_LIBS} CUDA::cudart_static CUDA::cublas_static CUDA::cublasLt_static)
-        else()
-            set(WHISPER_EXTRA_LIBS ${WHISPER_EXTRA_LIBS} CUDA::cudart CUDA::cublas CUDA::cublasLt)
-        endif()
-
+        add_library(ggml ALIAS ggml::ggml)
     else()
-        message(WARNING "cuBLAS not found")
-    endif()
-endif()
-
-if (WHISPER_CLBLAST)
-    find_package(CLBlast)
-    if (CLBlast_FOUND)
-        message(STATUS "CLBlast found")
-
-        set(GGML_OPENCL_SOURCES ggml-opencl.cpp ggml-opencl.h)
-
-        add_compile_definitions(GGML_USE_CLBLAST)
-
-        set(WHISPER_EXTRA_LIBS ${WHISPER_EXTRA_LIBS} clblast)
-    else()
-        message(WARNING "CLBlast not found")
-    endif()
-endif()
-
-if( WHISPER_OPENVINO )
-    find_package(OpenVINO REQUIRED COMPONENTS Runtime)
-endif()
-
-# compiler flags
-
-if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo")
-endif ()
-
-if (WHISPER_ALL_WARNINGS)
-    if (NOT MSVC)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} \
-            -Wall                           \
-            -Wextra                         \
-            -Wpedantic                      \
-            -Wshadow                        \
-            -Wcast-qual                     \
-            -Wstrict-prototypes             \
-            -Wpointer-arith                 \
-            -Wno-unused-function            \
-        ")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-            -Wall                           \
-            -Wextra                         \
-            -Wpedantic                      \
-            -Wcast-qual                     \
-        ")
-    else()
-        # todo : msvc
-    endif()
-endif()
-
-if (NOT MSVC)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=vla")
-    #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-math-errno -ffinite-math-only -funsafe-math-optimizations")
-endif()
-
-message(STATUS "CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
-
-if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm" OR ${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64")
-    message(STATUS "ARM detected")
-else()
-    message(STATUS "x86 detected")
-    if (MSVC)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
-        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /utf-8")
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /utf-8")
-        if(NOT WHISPER_NO_AVX2)
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX2")
-            set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /arch:AVX2")
-            set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX2")
-        else()
-            if(NOT WHISPER_NO_AVX)
-                set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX")
-                set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /arch:AVX")
-                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX")
-            endif()
-        endif()
-    else()
-        if (EMSCRIPTEN)
-            set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -pthread")
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
-        else()
-            if(__AVX__)
-                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mavx")
-            endif()
-            if(__AVX2__)
-                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mavx2")
-            endif()
-            if(__FMA__)
-                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfma")
-            endif()
-            if(__F16C__)
-                set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mf16c")
-            endif()
+        add_subdirectory(ggml)
+        if(WIN32)
+            # The following adds a _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR macro and is a workaround for
+            # the Windows C++ standard library which does not support constexpr mutexes.
+            # From the release notes://github.com/microsoft/STL/wiki/Changelog
+            #  Disable constexpr mutex constructor on Windows
+            #  Fixed mutex's constructor to be constexpr. #3824 #4000 #4339
+            #  Note: Programs that aren't following the documented restrictions on binary compatibility may encounter
+            #  null dereferences in mutex machinery. You must follow this rule:
+            #  When you mix binaries built by different supported versions of the toolset, the Redistributable version
+            #  must be at least as new as the latest toolset used by any app component.
+            #  You can define _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR as an escape hatch.
+            #
+            # Specifically to whisper.cpp this would cause a crash when using the Java bindings.
+            # resulting in a Invalid memory access error.
+            target_compile_definitions(ggml-base PRIVATE _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
         endif()
     endif()
+    # ... otherwise assume ggml is added by a parent CMakeLists.txt
 endif()
-
-if (WHISPER_PERF)
-    set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DGGML_PERF)
-endif()
+add_subdirectory(src)
 
 #
-# whisper.coreml - Core ML support
+# install
 #
 
-if (WHISPER_COREML)
-    set(TARGET whisper.coreml)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-    add_library(${TARGET}
-        coreml/whisper-encoder.h
-        coreml/whisper-encoder.mm
-        coreml/whisper-encoder-impl.h
-        coreml/whisper-encoder-impl.m
-        )
-
-    include(DefaultTargetOptions)
-
-    target_include_directories(${TARGET} PUBLIC
-        .
-        )
-
-    target_link_libraries(${TARGET} PRIVATE ${FOUNDATION_FRAMEWORK} ${COREML_FRAMEWORK})
-
-    set_target_properties(${TARGET} PROPERTIES
-        COMPILE_FLAGS "-fobjc-arc"
-        )
+if (NOT DEFINED WHISPER_BUILD_NUMBER)
+    set(WHISPER_BUILD_NUMBER        ${BUILD_NUMBER})
+endif()
+if (NOT DEFINED WHISPER_BUILD_COMMIT)
+    set(WHISPER_BUILD_COMMIT        ${BUILD_COMMIT})
 endif()
 
-if (WHISPER_OPENVINO)
-    set(TARGET whisper.openvino)
+set(WHISPER_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
+set(WHISPER_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
+set(WHISPER_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
 
-    add_library(${TARGET} OBJECT
-        openvino/whisper-openvino-encoder.h
-        openvino/whisper-openvino-encoder.cpp
-        )
+get_directory_property(WHISPER_TRANSIENT_DEFINES COMPILE_DEFINITIONS)
 
-    target_include_directories(${TARGET} PUBLIC
-        .
-        )
+set_target_properties(whisper PROPERTIES PUBLIC_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/include/whisper.h)
 
-    set_property(TARGET ${TARGET} PROPERTY POSITION_INDEPENDENT_CODE ON)
-    set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_USE_OPENVINO)
+install(TARGETS whisper LIBRARY PUBLIC_HEADER)
 
-    target_link_libraries(${TARGET} PRIVATE openvino::runtime)
-endif()
+target_compile_definitions(whisper PRIVATE
+    WHISPER_VERSION="${WHISPER_VERSION}"
+)
 
-#
-# whisper - this is the main library of the project
-#
+set_target_properties(parakeet PROPERTIES PUBLIC_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/include/parakeet.h)
+install(TARGETS parakeet LIBRARY PUBLIC_HEADER)
 
-set(TARGET whisper)
+target_compile_definitions(parakeet PRIVATE
+    PARAKEET_VERSION="${WHISPER_VERSION}"
+)
 
-add_library(${TARGET}
-    ggml.h
-    ggml.c
-    ${GGML_CUDA_SOURCES}
-    ${GGML_OPENCL_SOURCES}
-    whisper.h
-    whisper.cpp
-    )
+configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/whisper-config.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/whisper-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/whisper
+    PATH_VARS
+    WHISPER_INCLUDE_INSTALL_DIR
+    WHISPER_LIB_INSTALL_DIR
+    WHISPER_BIN_INSTALL_DIR )
 
-include(DefaultTargetOptions)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/whisper-config-version.cmake
+    VERSION ${WHISPER_VERSION}
+    COMPATIBILITY SameMajorVersion)
 
-target_include_directories(${TARGET} PUBLIC
-    .
-    )
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/whisper-config.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/whisper-config-version.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/whisper)
 
-if (WHISPER_COREML)
-    target_link_libraries(${TARGET} PRIVATE whisper.coreml)
-endif()
+configure_file(cmake/whisper.pc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/whisper.pc"
+        @ONLY)
 
-if (WHISPER_OPENVINO)
-    target_link_libraries(${TARGET} PRIVATE whisper.openvino)
-endif()
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/whisper.pc"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
-if (MSVC)
-    target_link_libraries(${TARGET} PRIVATE ${WHISPER_EXTRA_LIBS} ${CMAKE_THREAD_LIBS_INIT})
+set(PARAKEET_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
+set(PARAKEET_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
+set(PARAKEET_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
 
-    set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -D_CRT_SECURE_NO_WARNINGS)
-else()
-    target_link_libraries(${TARGET} PRIVATE m ${WHISPER_EXTRA_LIBS} ${CMAKE_THREAD_LIBS_INIT})
-endif()
+configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/parakeet-config.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/parakeet-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/parakeet
+    PATH_VARS
+    PARAKEET_INCLUDE_INSTALL_DIR
+    PARAKEET_LIB_INSTALL_DIR
+    PARAKEET_BIN_INSTALL_DIR)
 
-if (BUILD_SHARED_LIBS)
-    target_link_libraries(${TARGET} PUBLIC
-        ${CMAKE_DL_LIBS}
-        )
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/parakeet-config-version.cmake
+    VERSION ${WHISPER_VERSION}
+    COMPATIBILITY SameMajorVersion)
 
-    target_compile_definitions(${TARGET} PUBLIC
-        WHISPER_SHARED
-        GGML_SHARED
-        )
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/parakeet-config.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/parakeet-config-version.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/parakeet)
 
-    target_compile_definitions(${TARGET} PRIVATE
-        WHISPER_BUILD
-        GGML_BUILD
-        )
-endif()
+configure_file(cmake/parakeet.pc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/parakeet.pc"
+        @ONLY)
 
-if (GGML_CUDA_SOURCES)
-    message(STATUS "GGML CUDA sources found, configuring CUDA architecture")
-    set_property(TARGET whisper PROPERTY CUDA_ARCHITECTURES OFF)
-    set_property(TARGET whisper PROPERTY CUDA_SELECT_NVCC_ARCH_FLAGS "Auto")
-endif()
-
-if (EMSCRIPTEN)
-    set_target_properties(${TARGET} PROPERTIES COMPILE_FLAGS "-msimd128")
-endif()
-
-target_compile_definitions(${TARGET} PUBLIC
-    ${WHISPER_EXTRA_FLAGS}
-    )
-
-set_target_properties(${TARGET} PROPERTIES PUBLIC_HEADER "whisper.h")
-
-install(TARGETS ${TARGET}
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib/static
-    RUNTIME DESTINATION bin
-    PUBLIC_HEADER DESTINATION include
-    )
-
-#
-# bindings
-#
-
-add_subdirectory(bindings)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/parakeet.pc"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 #
 # programs, examples and tests
 #
 
 if (WHISPER_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
-    enable_testing()
+    include(CTest)
     add_subdirectory(tests)
 endif ()
 
 if (WHISPER_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if (MSVC)
+    set(MSVC_WARNING_FLAGS
+        /wd4101  # Unreferenced local variable
+        /wd4005  # Macro redefinition
+        /wd4065  # switch statement contains 'default' but no 'case' labels
+        /wd4267  # Conversion from 'size_t' to a smaller type, possible loss of data
+        /wd4244  # Conversion from one type to another type, possible loss of ata
+        /wd4805  # Unsafe mix of type
+        /wd4305  # Truncation from 'type1' to 'type2' (often double to float)
+        /wd4996  # Function or variable may be unsafe/deprecated
+    )
+    function(disable_msvc_warnings target_name)
+        if(TARGET ${target_name})
+            target_compile_options(${target_name} PRIVATE ${MSVC_WARNING_FLAGS})
+        endif()
+    endfunction()
+
+    if (WHISPER_BUILD_EXAMPLES)
+        disable_msvc_warnings(whisper)
+        disable_msvc_warnings(common)
+        disable_msvc_warnings(common-sdl)
+        disable_msvc_warnings(lsp)
+        disable_msvc_warnings(wchess-core)
+        disable_msvc_warnings(whisper-command)
+        disable_msvc_warnings(whisper-cli)
+        disable_msvc_warnings(whisper-server)
+        disable_msvc_warnings(whisper-stream)
+        disable_msvc_warnings(whisper-talk-llama)
+        disable_msvc_warnings(whisper-bench)
+        disable_msvc_warnings(quantize)
+        disable_msvc_warnings(vad-speech-segments)
+    endif()
 endif()

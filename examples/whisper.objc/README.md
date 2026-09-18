@@ -11,27 +11,32 @@ https://user-images.githubusercontent.com/1991296/204126266-ce4177c6-6eca-4bd9-b
 
 ## Usage
 
-```java
-git clone https://github.com/ggerganov/whisper.cpp
-open whisper.cpp/examples/whisper.objc/whisper.objc.xcodeproj/
+This example uses the whisper.xcframework which needs to be built first using the following command:
+```bash
+./build-xcframework.sh
+```
 
-// If you don't want to convert a Core ML model, you can skip this step by create dummy model
+A model is also required to be downloaded and can be done using the following command:
+```bash
+./models/download-ggml-model.sh base.en
+```
+
+If you don't want to convert a Core ML model, you can skip this step by creating dummy model:
+```bash
 mkdir models/ggml-base.en-encoder.mlmodelc
 ```
 
-Make sure to build the project in `Release`:
+### Core ML support
+1. Follow all the steps in the `Usage` section, including adding the ggml model file.  
+The ggml model file is required as the Core ML model is only used for the encoder. The
+decoder which is in the ggml model is still required.
+2. Follow the [`Core ML support` section of readme](../../README.md#core-ml-support) to convert the
+model.
+3. Add the Core ML model (`models/ggml-base.en-encoder.mlmodelc/`) to `whisper.swiftui.demo/Resources/models` **via Xcode**.
 
-<img width="947" alt="image" src="https://user-images.githubusercontent.com/1991296/197382607-9e1e6d1b-79fa-496f-9d16-b71dc1535701.png">
-
-Also, don't forget to add the `-DGGML_USE_ACCELERATE` compiler flag for `ggml.c` in Build Phases.
-This can significantly improve the performance of the transcription:
-
-<img width="1072" alt="image" src="https://user-images.githubusercontent.com/1991296/208511239-8d7cdbd1-aa48-41b5-becd-ca288d53cc07.png">
-
-If you want to enable Core ML support, you can add the `-DWHISPER_USE_COREML -DWHISPER_COREML_ALLOW_FALLBACK` compiler flag for `whisper.cpp` in Build Phases:
-
-<img width="1072" alt="image" src="https://github.com/ggerganov/whisper.cpp/assets/3001525/103e8f57-6eb6-490d-a60c-f6cf6c319324">
-
-Then follow the [`Core ML support` section of readme](../../README.md#core-ml-support) for convert the model.
-
-In this project, it also added `-O3 -DNDEBUG` to `Other C Flags`, but adding flags to app proj is not ideal in real world (applies to all C/C++ files), consider splitting xcodeproj in workspace in your own project.
+When the example starts running you should now see that it is using the Core ML model:
+```console
+whisper_init_state: loading Core ML model from '/Library/Developer/CoreSimulator/Devices/25E8C27D-0253-4281-AF17-C3F2A4D1D8F4/data/Containers/Bundle/Application/3ADA7D59-7B9C-43B4-A7E1-A87183FC546A/whisper.swiftui.app/models/ggml-base.en-encoder.mlmodelc'
+whisper_init_state: first run on a device may take a while ...
+whisper_init_state: Core ML model loaded
+```
